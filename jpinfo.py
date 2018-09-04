@@ -42,6 +42,7 @@ import urllib.request, urllib.error, urllib.parse
 import sys, traceback
 import os
 import time
+import keyring
 import psycopg2 as py_db
 import socket
 from html.parser import HTMLParser
@@ -1068,32 +1069,32 @@ vct.feed(
     ).read().decode("utf-8")
 )
 threads = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]
-cursor=py_db.connect(dbname="jmdict").cursor()
+cursor=py_db.connect(dbname="datastore", user="postgres", password=keyring.get_password("postgres", "postgres")).cursor()
 cursor.execute("SET NAMES 'UTF8'")
 # get tablenames for dict and index from dict ID
-cursor.execute("select tablename from WEBUSERS.DATASETS where ID=%s" % options.dictid)
+cursor.execute("select tablename from \"WEBUSERS\".\"DATASETS\" where \"ID\"=%s" % options.dictid)
 row = cursor.fetchone()
 if not row:
     print("dict not found - sure you got the ID right?")
     sys.exit(1)
-fromdict = row[0][0]
+fromdict = row[0]
 print("finding longest word...")
-cursor.execute("select max(char_length(kanji)) from USERDATA.`%s`" % fromdict)
-biggest = int(cursor.fetchone()[0][0])
+cursor.execute("select max(char_length(kanji)) from \"USERDATA\".\"%s\"" % fromdict)
+biggest = int(cursor.fetchone()[0])
 print("finding longest reading...")
-cursor.execute("select max(char_length(reading)) from USERDATA.`%s`" % fromdict)
-bigr = int(cursor.fetchone()[0][0])
+cursor.execute("select max(char_length(reading)) from \"USERDATA\".\"%s\"" % fromdict)
+bigr = int(cursor.fetchone()[0])
 if bigr > biggest: biggest = bigr
 fromindexlist = []
 cursor.query("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDa=%s and datasetIDb=ID" % options.dictid)
 row = cursor.fetchone()
 while row:
-    fromindexlist.append(row[0][0])
+    fromindexlist.append(row[0])
     row = cursor.fetchone()
 cursor.query("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDb=%s and datasetIDa=ID" % options.dictid)
 row = cursor.fetchone()
 while row:
-    fromindexlist.append(row[0][0])
+    fromindexlist.append(row[0])
     row = cursor.fetchone()
 if len(fromindexlist) == 0 or options.new:
     if options.new: fromindex = options.new
