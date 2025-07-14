@@ -51,6 +51,9 @@ from optparse import OptionParser
 from datetime import datetime, timedelta
 import threading
 import subprocess
+
+import psycopg2.errors
+
 #from jmdict import jmdict
 sys.path.append("..")
 #from cmdmsg import cmdmsg
@@ -739,7 +742,7 @@ def crawlcheck(db_cursor, url, referrer = None, recent = 0, encoding = None):
     try:
         db_cursor.execute(insert, params)
         thisis = db_cursor.fetchone()[0]
-    except _mysql_exceptions.IntegrityError:
+    except psycopg2.errors.UniqueViolation:
         # hopefully that just means it's already there
         thisis=-1
     if recent:
@@ -762,8 +765,8 @@ def crawlupdate(db_cursor, url, ja=None, redirect = None, status = None, line=No
         reid = crawlcheck(redirect)
         redirect = unquoteutf8(redirect, encoding = encoding)
         if reid is None: return None
-    if type(status) == unicode: status = status.encode("utf-8") # for DB
-    if type(details) == unicode: details = details.encode("utf-8") # for DB
+    if type(status) == bytes: status = status.encode("utf-8") # for DB
+    if type(details) == bytes: details = details.encode("utf-8") # for DB
 
     update = "update webcrawl set stamp=now()"
     params = []
@@ -794,7 +797,7 @@ def crawlupdate(db_cursor, url, ja=None, redirect = None, status = None, line=No
 def scan2(dicttable, indextable, url, thisid):
 # db connection for the thread
     scan_cursor=py_db.connect(dbname="jmdict").cursor()
-    scan_cursorscan_cursor.execute("SET NAMES utf8")
+    scan_cursor.execute("SET NAMES utf8")
     scan_cursor.execute("SET CHARACTER SET utf8")
     scan_cursor.execute("SET character_set_connection=utf8")
     opener = urllib.request.build_opener()
@@ -846,8 +849,8 @@ def scan2(dicttable, indextable, url, thisid):
         realurl = page.geturl().decode("utf-8")
         if realurl != url:
             print("REDIRECT?", url, "=>", realurl)
-            crawlupdate(db, url, redirect=realurl, encoding = charset[0])
-            thisid = crawlcheck(db, realurl, recent=1)
+            crawlupdate(cursor, url, redirect=realurl, encoding = charset[0])
+            thisid = crawlcheck(cursor, realurl, recent=1)
             if not globals()['options'].force and thisid is None: return parsetime
         if page.info().getheader("Content-Type") and page.info().getheader("Content-Type").split(";")[0] != "text/html":
             crawlupdate(scan_cursor, url, ja=0, status="Content type: " + page.info().getheader("Content-Type").split(";")[0], encoding = charset[0])
@@ -883,7 +886,7 @@ def scan2(dicttable, indextable, url, thisid):
         leastworst = 0
         while len(charset):
             try:
-                content = unicode(content, charset[0])
+                content = content.encode(charset[0])
                 reader.encoding = charset[0]
                 break
             except LookupError:
@@ -900,7 +903,7 @@ def scan2(dicttable, indextable, url, thisid):
                 if len(charset) == 1:
                     if leastworst:
                         print("decoding from", leastworstenc, "with replacements")
-                        content = unicode(content, leastworstenc, "replace")
+                        content = content.encode(leastworstenc, "replace")
                         reader.encoding = leastworstenc
                     else:
                         print("failed character decoding:")
@@ -939,7 +942,7 @@ def scan2(dicttable, indextable, url, thisid):
     else : japness = float(100 * reader.ja) / float(reader.nonja + reader.ja)
     # log url to DB with timestamp and ja score
     if globals()['options'].showpages: print(unquoteutf8(realurl, encoding = reader.encoding), status, "ja = %.1f" % japness)
-    thisID = crawlupdate(db, realurl, ja=japness, status=status, line=lineno, char=offset, details=details, encoding = reader.encoding)
+    thisID = crawlupdate(cursor, realurl, ja=japness, status=status, line=lineno, char=offset, details=details, encoding = reader.encoding)
     #if status != "OK": print urllib.unquote(realurl), "is how japanese (CJK)? .. %d%%" % japness, status
     # if it's japanese enough and we've not gone too deep and we've not seen it before (recently) then follow the link
     if japness > 25:
@@ -959,11 +962,11 @@ def scan2(dicttable, indextable, url, thisid):
                 if parts[3]: newchild += ";" + parts[3]
                 if parts[4]: newchild += "?" + parts[4]
                 if parts[0] in ("http", "https"):
-                    crawlcheck(db, url = newchild, referrer = realurl, encoding = reader.encoding)
+                    crawlcheck(cursor, url = newchild, referrer = realurl, encoding = reader.encoding)
                     if globals()['options'].links: print(urllib.parse.unquote(newchild))
             except IndexError: # error in urlparse that tries to 'find' on a None value
                 print(urllib.parse.unquote(realurl), " - problem parsing child: ", child)
-                crawlcheck(db, url = child, referrer = realurl, encoding = reader.encoding)
+                crawlcheck(cursor, url = child, referrer = realurl, encoding = reader.encoding)
             # if the child isn't japanese enough then modify rules accordingly
     # otherwise make a note of the urls you've not followed with a timestamp and ref to the page that wasn't japanese enough
         # then if you get to one of those pages by another route and find it's good you can modify the rules accordingly
@@ -996,7 +999,7 @@ def scan(dicttable, indextable, url = None, pref = None):
     # use weight rather than if...else otherwise you have to grep the entire web before you get any wikipedia pages!
     if url:
         url.strip()
-        thisid = crawlcheck(db, url, recent= not globals()['options'].force)
+        thisid = crawlcheck(cursor, url, recent= not globals()['options'].force)
         if thisid is None: return None
         picktime = datetime.now() - scanstart
         parsetime = scan2(dicttable, indextable, url, thisid)
@@ -1031,7 +1034,7 @@ def scan(dicttable, indextable, url = None, pref = None):
                 print(lasttime, rowcount, rowcount-lastrowcount, (datetime.now() - scanstart) / rowcount)
                 jacount = 0
                 lastrowcount=rowcount
-            row = res.fetchone()
+            row = cursor.fetchone()
 
         return [datetime.now() - scanstart, picktime, parsetime]
 

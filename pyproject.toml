@@ -1,0 +1,9 @@
+[project]
+name = "jp-parse"
+version = "0.1.0"
+description = "Add your description here"
+requires-python = ">=3.13"
+dependencies = [
+    "keyring>=25.6.0",
+    "psycopg2-binary>=2.9.10",
+]
