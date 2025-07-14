@@ -314,6 +314,17 @@ class jaHTMLParser(HTMLParser):
         # TODO: read in entities from specified DTD.  maybe do that outside and pass as an option
         for k,v in self.jaentities.items(): self.unentities[v] = k
         self.db_cursor = db_cursor
+        self.dicttable = None
+        self.biggest = None
+        self.ja = None
+        self.nonja = None
+        self.cursor = None
+        self.indextable = None
+        self.thisid = None
+        self.block = None
+        self.missedtag = None
+        self.tags = None
+        self.error = None
 
     def iscjk(self, string):
         paraja = 0
@@ -442,6 +453,8 @@ class jaHTMLParser(HTMLParser):
         beststrlen = 0
         bestatype = None
         bestestrow = None
+        bestesttenses = None
+        bestestlen = None
         bestinsert = None
         bestinsert_params = None
         # deal with the most irregular verb as a one-off special case - "to be"
@@ -627,6 +640,8 @@ class jaHTMLParser(HTMLParser):
             unknown = u""
             english = u""
             japanese = u""
+            lastquery = ""
+            lastvals = tuple()
             while strpos < len(self.currenttext): # there's something to match
                 strlen, kr, row = self.getamatch4(self.currenttext[strpos:])
                 if not strlen: # didn't find any match
@@ -715,7 +730,7 @@ def unquoteutf8(url, encoding = None):
     # 'url' should always be unicode on input but utf-8 should be output for DB
     # however, links in pages _may_ be using the page encoding
     try:
-        return urllib.parse.unquote(url.encode(encoding)).decode(encoding).encode("utf-8")
+        return urllib.parse.unquote(url.encode(encoding), encoding=encoding).encode("utf-8")
     except: # no encoding or wrong encoding specified - utf-8 .. even if that's what failed!
         return urllib.parse.unquote(url.encode("utf-8"))
 
@@ -724,6 +739,7 @@ def unquoteutf8(url, encoding = None):
 def crawlcheck(db_cursor, url, referrer = None, recent = 0, encoding = None):
     url = unquoteutf8(url, encoding = encoding)
     if globals()['options'].verbose: print ("checking for previous scan of", url)
+    refid = None
     if referrer:
         referrer = unquoteutf8(referrer, encoding = encoding)
         db_cursor.execute("select ID from webcrawl where url='%s'", (referrer, ))
@@ -747,8 +763,8 @@ def crawlcheck(db_cursor, url, referrer = None, recent = 0, encoding = None):
         thisis=-1
     if recent:
         db_cursor.execute("select ID from webcrawl where url='%s' and timestampdiff(hour, now(), stamp)<164 and (ja is not null or redirect is not null)", url)
-        row = db_cursor.fetchone()
-    if recent and row: return None
+        if db_cursor.fetchone():
+            return None
     if thisis == -1:
         db_cursor.execute("select ID from webcrawl where url='%s'", url)
         row = db_cursor.fetchone()
@@ -762,9 +778,11 @@ def crawlcheck(db_cursor, url, referrer = None, recent = 0, encoding = None):
 def crawlupdate(db_cursor, url, ja=None, redirect = None, status = None, line=None, char=None, details=None, encoding = None):
     url = unquoteutf8(url, encoding = encoding)
     if redirect:
-        reid = crawlcheck(redirect)
+        reid = crawlcheck(db_cursor, redirect)
         redirect = unquoteutf8(redirect, encoding = encoding)
         if reid is None: return None
+    else:
+        reid = None
     if type(status) == bytes: status = status.encode("utf-8") # for DB
     if type(details) == bytes: details = details.encode("utf-8") # for DB
 
@@ -827,7 +845,7 @@ def scan2(dicttable, indextable, url, thisid):
     reader.dicttable = dicttable
     reader.indextable = indextable
     reader.encoding = "Shift_JIS" # the most common encoding for jp pages which don't specify any encoding
-    reader.CDATA_CONTENT_ELEMENTS = [] # don't treat CDATA in <style> amd <script> tags as 'stuff' - they're decls which i'd like to skip.
+    reader.CDATA_CONTENT_ELEMENTS = tuple() # don't treat CDATA in <style> amd <script> tags as 'stuff' - they're decls which i'd like to skip.
     reader.missedtag = []
     reader.biggest = globals()['biggest']
     realurl = url
@@ -839,7 +857,8 @@ def scan2(dicttable, indextable, url, thisid):
 
     try:
         urlparts = urlparse(url)
-        page = opener.open(urlunparse((urlparts[0], urlparts[1].encode("idna")) +  urlparts[2:]).encode("utf-8"))
+        req = urllib.request.Request(str(urlunparse((urlparts[0], urlparts[1].encode("idna")) +  urlparts[2:])))
+        page = opener.open(req).read().encode("utf-8")
 
         charset = ["utf-8", "Shift_JIS", "euc_jp", "iso8859_8", "cp874", "big5"]
         if "charset=" in page.headers['content-type']:
@@ -855,13 +874,7 @@ def scan2(dicttable, indextable, url, thisid):
         if page.info().getheader("Content-Type") and page.info().getheader("Content-Type").split(";")[0] != "text/html":
             crawlupdate(scan_cursor, url, ja=0, status="Content type: " + page.info().getheader("Content-Type").split(";")[0], encoding = charset[0])
             home = "/mnt/stuff/media/web/" + page.info().getheader("Content-Type").split(";")[0]
-            cantcreate = False
-            try:
-                os.makedirs(home)
-            except OSError as err:
-                if not str(err).startswith("[Errno 17]"): # dir exists
-                    sys.stderr.write(str(err) + "\n")
-                    cantcreate = True
+            cantcreate = makedir(home)
             if not cantcreate:
                 #print home
                 pieces = urlparse(url)
@@ -915,25 +928,27 @@ def scan2(dicttable, indextable, url, thisid):
         reader.close()
         parsetime=datetime.now() - parsestart
 
-    except ValueError as status:
-        print(traceback.format_exc())
-        status = str(status)
     except socket.timeout:
         status = "Connection: no response from server - timed out"
-    except socket.error as e:
-        status = str(e)
     except socket.gaierror as e:
         status = str(e)
     except urllib.error.HTTPError as e:
-        if hasattr(e, "reason"): status = "HTTP: " + e.reason
-        else: status = "HTTP %d" % e.code
+        if hasattr(e, "reason"):
+            status = "HTTP: " + e.reason
+        else:
+            status = "HTTP %d" % e.code
     except urllib.error.URLError as e:
         # URLError.reason appears to be another object - timeout, gaierror etc
-            # those are the socket exceptions: error, herror, gaierror and timeout
-        #if hasattr(e, "reason"): status = "URL error: " + e.reason
+        # those are the socket exceptions: error, herror, gaierror and timeout
+        # if hasattr(e, "reason"): status = "URL error: " + e.reason
         # ah - but it doesn't have a 'code' either!
-        #status = "URL %d" % e.code
+        # status = "URL %d" % e.code
         status = "URL: " + str(type(e.reason))
+    except socket.error as e:
+        status = str(e)
+    except ValueError as status:
+        print(traceback.format_exc())
+        status = str(status)
 
     globals()['biggest'] = reader.biggest
     for a in reader.missedtag:
@@ -951,7 +966,7 @@ def scan2(dicttable, indextable, url, thisid):
             # if child is http://something where something contains no / then add a trailing /
             if child[0:7] == "http://" and child[7:].find("/") == -1: child += "/"
             if child[0:8] == "https://" and child[8:].find("/") == -1: child += "/"
-            child = urljoin(realurl, child).replace("/..", "")
+            child = str(urljoin(realurl, child).replace("/..", ""))
             if child[0:7] == "http://" and child[7:].find("/") == -1: child += "/"
             if child[0:8] == "https://" and child[8:].find("/") == -1: child += "/"
             try:
@@ -972,6 +987,18 @@ def scan2(dicttable, indextable, url, thisid):
         # then if you get to one of those pages by another route and find it's good you can modify the rules accordingly
             # we like self-tuning algorithms :-)
     return parsetime
+
+
+def makedir(home):
+    cantcreate = False
+    try:
+        os.makedirs(home)
+    except OSError as err:
+        if not str(err).startswith("[Errno 17]"):  # dir exists
+            sys.stderr.write(str(err) + "\n")
+            cantcreate = True
+    return cantcreate
+
 
 def threadscan(dicttable, indextable, url, thisid):
     threads = globals()['threads']
@@ -1089,12 +1116,12 @@ cursor.execute("select max(char_length(reading)) from \"USERDATA\".\"%s\"" % fro
 bigr = int(cursor.fetchone()[0])
 if bigr > biggest: biggest = bigr
 fromindexlist = []
-cursor.query("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDa=%s and datasetIDb=ID" % options.dictid)
+cursor.execute("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDa=%s and datasetIDb=ID" % options.dictid)
 row = cursor.fetchone()
 while row:
     fromindexlist.append(row[0])
     row = cursor.fetchone()
-cursor.query("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDb=%s and datasetIDa=ID" % options.dictid)
+cursor.execute("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDb=%s and datasetIDa=ID" % options.dictid)
 row = cursor.fetchone()
 while row:
     fromindexlist.append(row[0])
