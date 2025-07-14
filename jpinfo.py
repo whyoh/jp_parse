@@ -537,8 +537,8 @@ class jaHTMLParser(HTMLParser):
                     if besttenses:
                         if debug: print("dealing with conjugation")
                         # figure out the kanji and reading versions from the dict form
-                        cursor.execute("select reading, kanji, meaning from USERDATA.`" + self.dicttable + "` where jmdictID=%s and senseID=%s and tense='%s'" % (row[0][0], row[0][1], row[0][2]))
-                        row2 = cursor.fetchone()[0]
+                        self.cursor.execute("select reading, kanji, meaning from USERDATA.`" + self.dicttable + "` where jmdictID=%s and senseID=%s and tense='%s'" % (row[0][0], row[0][1], row[0][2]))
+                        row2 = self.cursor.fetchone()[0]
                         if bestword == bestreading and row2[0] != row2[1]:
                             # the original is non-kanji but there's a kanji version in the dictionary
                             # so derive a new bestword
@@ -585,12 +585,12 @@ class jaHTMLParser(HTMLParser):
         if beststrlen and bestinsert:
             row = bestestrow[:]
             # TODO: lock tables
-            cursor.execute("select count(*) from USERDATA.`%s` where jmdictID=%s and senseID=%s and tense='%s'" % (self.dicttable, row[0][0], row[0][1], row[0][2]))
-            if int(cursor.fetchone()[0][0]) == 0:
+            self.cursor.execute("select count(*) from USERDATA.`%s` where jmdictID=%s and senseID=%s and tense='%s'" % (self.dicttable, row[0][0], row[0][1], row[0][2]))
+            if int(self.cursor.fetchone()[0][0]) == 0:
                 #cursor.execute("select max(ID/100000000000) from USERDATA.`" + self.dicttable + "` where jmdictID=%s and senseID=%s" % (row[0][0], row[0][1]))
                 #maxtense = int(float(cursor.fetchone()[0][0])) + 1
-                cursor.execute("select meaning from USERDATA.`" + self.dicttable + "` where jmdictID=%s and senseID=%s and tense='dict'" % (row[0][0], row[0][1]))
-                dictmeaning = cursor.fetchone()[0][0]
+                self.cursor.execute("select meaning from USERDATA.`" + self.dicttable + "` where jmdictID=%s and senseID=%s and tense='dict'" % (row[0][0], row[0][1]))
+                dictmeaning = self.cursor.fetchone()[0][0]
                 longtense = []
                 numtenses = len(bestesttenses)
                 tenseno = 1
@@ -603,7 +603,7 @@ class jaHTMLParser(HTMLParser):
                     longtense.append(self.tenses[rtense])
                 # FIXME: if we haven't narrowed it down then add for each dict with same atype
                 params = [self.dicttable, row[0][0]] + list(bestinsert_params) + [dictmeaning+" ("+ ", ".join(longtense) + ")", row[0][1], row[0][0]+row[0][1]+row[0][2], row[0][2]]
-                cursor.execute(
+                self.cursor.execute(
                     "insert into USERDATA.`%s` set jmdictID=%s, %s, meaning='%s', senseID=%s, ID=conv(substring(sha1('%s'), 1, 15), 16, 10), tense='%s'", params)
                 if bestestlen > self.biggest: self.biggest = bestestlen
         if string[:2] == u"です" and beststrlen == 1:
@@ -812,7 +812,7 @@ def crawlupdate(db_cursor, url, ja=None, redirect = None, status = None, line=No
     if db_cursor.rowcount != 1: sys.stderr.write("warning: couldn't update crawl status of url '%s' (%s)\n" % (url, update))
     return None
 
-def scan2(dicttable, indextable, url, thisid):
+def scan2(cursor, dicttable, indextable, url, thisid):
 # db connection for the thread
     scan_cursor=py_db.connect(dbname="jmdict").cursor()
     scan_cursor.execute("SET NAMES utf8")
@@ -842,6 +842,7 @@ def scan2(dicttable, indextable, url, thisid):
     reader.ja = 0
     reader.nonja = 0
     reader.block = 0
+    reader.cursor = cursor
     reader.dicttable = dicttable
     reader.indextable = indextable
     reader.encoding = "Shift_JIS" # the most common encoding for jp pages which don't specify any encoding
@@ -1000,20 +1001,20 @@ def makedir(home):
     return cantcreate
 
 
-def threadscan(dicttable, indextable, url, thisid):
+def threadscan(cursor, dicttable, indextable, url, thisid):
     threads = globals()['threads']
     running = 0
     while not running:
         for threadnum in range(0,16):
             if not threads[threadnum] or not threads[threadnum].isAlive():
-                threads[threadnum] = threading.Thread(group=None, target=scan2, kwargs={'dicttable':dicttable, 'indextable':indextable, 'url':url, 'thisid':thisid})
+                threads[threadnum] = threading.Thread(group=None, target=scan2, kwargs={"cursor": cursor,'dicttable':dicttable, 'indextable':indextable, 'url':url, 'thisid':thisid})
                 threads[threadnum].start()
                 running = 1
                 break
         if not running:
             time.sleep(1)
 
-def scan(dicttable, indextable, url = None, pref = None):
+def scan(cursor, dicttable, indextable, url = None, pref = None):
     lasttime = scanstart = datetime.now()
     # if url is blank
         # try random http://www.*, non-wikipedia entries first
@@ -1029,7 +1030,7 @@ def scan(dicttable, indextable, url = None, pref = None):
         thisid = crawlcheck(cursor, url, recent= not globals()['options'].force)
         if thisid is None: return None
         picktime = datetime.now() - scanstart
-        parsetime = scan2(dicttable, indextable, url, thisid)
+        parsetime = scan2(cursor, dicttable, indextable, url, thisid)
     else:
         parsetime = timedelta(seconds = 0)
         if pref:
@@ -1052,7 +1053,7 @@ def scan(dicttable, indextable, url = None, pref = None):
                 parsetime = timedelta(seconds = 0)
             else:
                 thisid = int(row[0][2])
-                parsetime = scan2(dicttable, indextable, url, thisid)
+                parsetime = scan2(cursor, dicttable, indextable, url, thisid)
                 #threadscan(dicttable, indextable, url, thisid)
             rowcount += 1
             #if parsetime != timedelta(seconds = 0): jacount += 1
@@ -1066,71 +1067,80 @@ def scan(dicttable, indextable, url = None, pref = None):
         return [datetime.now() - scanstart, picktime, parsetime]
 
 
-parser = OptionParser()
-parser.add_option("-d", "--dataset", dest="dictid", type='long', help="dataset ID for the jmdict table")
-parser.add_option("-i", "--index", dest="index", help="index table for the jmdict table - ignored if there's only one index linked to your jmdict table")
-parser.add_option("-u", "--url", dest="url", help="specific URL to scan first")
-parser.add_option("-r", "--recursive", action="store_true", dest="recursive", default=False, help="crawl the web")
-parser.add_option("-n", "--new", dest="new", help="tablename for a new index")
-parser.add_option("-p", "--pref", dest="preferred", help="part of URL to prefer when selecting a link to follow")
-parser.add_option("-f", "--force", action="store_true", dest="force", default=False, help="scan page even if it's already been scanned")
-parser.add_option("-t", "--test", action="store_true", dest="test", default=False, help="just say what you would do and why")
-parser.add_option("-s", "--showpages", action="store_true", dest="showpages", default=False, help="display pages scanned")
-parser.add_option("-l", "--links", action="store_true", dest="links", default=False, help="list all links")
-parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False, help="give detailed output")
-(options, args) = parser.parse_args()
-
-if not options.dictid:
-    print("you must specify a jmdict table.  use -h for details.")
-    sys.exit(1)
-
-print("getting conjugation table from web...")
-opener = urllib.request.build_opener()
-opener.addheaders = [('User-agent', 'Mozilla/5.0')] # wikipedia doesn't work without this - gives 403 forbidden
-
-# grrr.  "instance attributes"??!
-# update readings table from http://en.wikibooks.org/wiki/Japanese/Verb_conjugation_table
-vct = vctHTMLParser()
-#vct.feed(opener.open("http://en.wikibooks.org/wiki/Japanese/Verb_conjugation_table").read())
-# FIXME: the table format has been updated - cheat for now and use the old version
-vct.feed(
-    opener.open(
-        "http://en.wikibooks.org/w/index.php?title=Japanese/Verb_conjugation_table&oldid=1272624"
-    ).read().decode("utf-8")
-)
-threads = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]
-cursor=py_db.connect(dbname="datastore", user="postgres", password=keyring.get_password("postgres", "postgres")).cursor()
-cursor.execute("SET NAMES 'UTF8'")
-# get tablenames for dict and index from dict ID
-cursor.execute("select tablename from \"WEBUSERS\".\"DATASETS\" where \"ID\"=%s" % options.dictid)
-row = cursor.fetchone()
-if not row:
-    print("dict not found - sure you got the ID right?")
-    sys.exit(1)
-fromdict = row[0]
-print("finding longest word...")
-cursor.execute("select max(char_length(kanji)) from \"USERDATA\".\"%s\"" % fromdict)
-biggest = int(cursor.fetchone()[0])
-print("finding longest reading...")
-cursor.execute("select max(char_length(reading)) from \"USERDATA\".\"%s\"" % fromdict)
-bigr = int(cursor.fetchone()[0])
-if bigr > biggest: biggest = bigr
-fromindexlist = []
-cursor.execute("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDa=%s and datasetIDb=ID" % options.dictid)
-row = cursor.fetchone()
-while row:
-    fromindexlist.append(row[0])
+def initialise():
+    parser = OptionParser()
+    parser.add_option("-d", "--dataset", dest="dictid", type='long', help="dataset ID for the jmdict table")
+    parser.add_option("-i", "--index", dest="index",
+                      help="index table for the jmdict table - ignored if there's only one index linked to your jmdict table")
+    parser.add_option("-u", "--url", dest="url", help="specific URL to scan first")
+    parser.add_option("-r", "--recursive", action="store_true", dest="recursive", default=False, help="crawl the web")
+    parser.add_option("-n", "--new", dest="new", help="tablename for a new index")
+    parser.add_option("-p", "--pref", dest="preferred", help="part of URL to prefer when selecting a link to follow")
+    parser.add_option("-f", "--force", action="store_true", dest="force", default=False,
+                      help="scan page even if it's already been scanned")
+    parser.add_option("-t", "--test", action="store_true", dest="test", default=False,
+                      help="just say what you would do and why")
+    parser.add_option("-s", "--showpages", action="store_true", dest="showpages", default=False,
+                      help="display pages scanned")
+    parser.add_option("-l", "--links", action="store_true", dest="links", default=False, help="list all links")
+    parser.add_option("-v", "--verbose", action="store_true", dest="verbose", default=False,
+                      help="give detailed output")
+    (options, args) = parser.parse_args()
+    if not options.dictid:
+        print("you must specify a jmdict table.  use -h for details.")
+        sys.exit(1)
+    print("getting conjugation table from web...")
+    opener = urllib.request.build_opener()
+    opener.addheaders = [('User-agent', 'Mozilla/5.0')]  # wikipedia doesn't work without this - gives 403 forbidden
+    # grrr.  "instance attributes"??!
+    # update readings table from http://en.wikibooks.org/wiki/Japanese/Verb_conjugation_table
+    vct = vctHTMLParser()
+    # vct.feed(opener.open("http://en.wikibooks.org/wiki/Japanese/Verb_conjugation_table").read())
+    # FIXME: the table format has been updated - cheat for now and use the old version
+    vct.feed(
+        opener.open(
+            "http://en.wikibooks.org/w/index.php?title=Japanese/Verb_conjugation_table&oldid=1272624"
+        ).read().decode("utf-8")
+    )
+    threads = [None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None,
+               None, None, None, None, None, None, None, None, None, None, None, None, None, None, None]
+    cursor = py_db.connect(dbname="datastore", user="postgres",
+                           password=keyring.get_password("postgres", "postgres")).cursor()
+    cursor.execute("SET NAMES 'UTF8'")
+    # get tablenames for dict and index from dict ID
+    cursor.execute("select tablename from \"WEBUSERS\".\"DATASETS\" where \"ID\"=%s" % options.dictid)
     row = cursor.fetchone()
-cursor.execute("select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDb=%s and datasetIDa=ID" % options.dictid)
-row = cursor.fetchone()
-while row:
-    fromindexlist.append(row[0])
+    if not row:
+        print("dict not found - sure you got the ID right?")
+        sys.exit(1)
+    fromdict = row[0]
+    print("finding longest word...")
+    cursor.execute("select max(char_length(kanji)) from \"USERDATA\".\"%s\"" % fromdict)
+    biggest = int(cursor.fetchone()[0])
+    print("finding longest reading...")
+    cursor.execute("select max(char_length(reading)) from \"USERDATA\".\"%s\"" % fromdict)
+    bigr = int(cursor.fetchone()[0])
+    if bigr > biggest: biggest = bigr
+    fromindexlist = []
+    cursor.execute(
+        "select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDa=%s and datasetIDb=ID" % options.dictid)
     row = cursor.fetchone()
-if len(fromindexlist) == 0 or options.new:
-    if options.new: fromindex = options.new
-    else: fromindex = fromdict + "jpindex"
-    try:
-        cursor.execute("""CREATE TABLE `USERDATA`.`%s` (
+    while row:
+        fromindexlist.append(row[0])
+        row = cursor.fetchone()
+    cursor.execute(
+        "select distinct tablename from WEBUSERS.JOINS, WEBUSERS.DATASETS where datasetIDb=%s and datasetIDa=ID" % options.dictid)
+    row = cursor.fetchone()
+    while row:
+        fromindexlist.append(row[0])
+        row = cursor.fetchone()
+    if len(fromindexlist) == 0 or options.new:
+        if options.new:
+            fromindex = options.new
+        else:
+            fromindex = fromdict + "jpindex"
+        try:
+            cursor.execute("""CREATE TABLE `USERDATA`.`%s` (
       `urlID` bigint(20) unsigned NOT NULL,
       `block` int(11) NOT NULL,
       `order` int(10) unsigned NOT NULL,
@@ -1144,37 +1154,56 @@ if len(fromindexlist) == 0 or options.new:
       KEY `url` USING BTREE (`urlID`,`block`,`order`),
       KEY `jmdict` USING BTREE (`jmdictID`,`jmsenseID`,`tense`,`kr`)
     ) ENGINE=MyISAM DEFAULT CHARSET=latin1 COMMENT='index of jmdict words in webcrawl pages'""" % fromindex)
-    except:
-        print("failed to create index table `%s`" % fromindex)
-        sys.exit(1)
-    cursor.execute("insert into WEBUSERS.DATASETS set tablename='%s', stamp=now(), userid=0, status='loading' returning id" % fromindex)
-    toindexid = cursor.fetchone()[0]
-    print("created dataset %d for new index" % toindexid)
-    # make a set of 3 JOINS records for it
-    cursor.execute("insert into WEBUSERS.JOINS set datasetIDa=%s, datasetIDb=%d, columna='jmdictID', columnb='jmdictID'" % (options.dictid, toindexid))
-    cursor.execute("insert into WEBUSERS.JOINS set datasetIDa=%s, datasetIDb=%d, columna='senseID', columnb='jmsenseID'" % (options.dictid, toindexid))
-    cursor.execute("insert into WEBUSERS.JOINS set datasetIDa=%s, datasetIDb=%d, columna='tense', columnb='tense'" % (options.dictid, toindexid))
-elif len(fromindexlist) == 1: fromindex = fromindexlist[0]
-else:
-    if options.index:
-        if options.index not in fromindexlist:
-            print(str(options.index) + " isn't a valid index for your jmdict table. valid index tables:", ", ".join(fromindexlist))
+        except:
+            print("failed to create index table `%s`" % fromindex)
             sys.exit(1)
-        else: fromindex = options.index
+        cursor.execute(
+            "insert into WEBUSERS.DATASETS set tablename='%s', stamp=now(), userid=0, status='loading' returning id" % fromindex)
+        toindexid = cursor.fetchone()[0]
+        print("created dataset %d for new index" % toindexid)
+        # make a set of 3 JOINS records for it
+        cursor.execute(
+            "insert into WEBUSERS.JOINS set datasetIDa=%s, datasetIDb=%d, columna='jmdictID', columnb='jmdictID'" % (
+                options.dictid, toindexid))
+        cursor.execute(
+            "insert into WEBUSERS.JOINS set datasetIDa=%s, datasetIDb=%d, columna='senseID', columnb='jmsenseID'" % (
+                options.dictid, toindexid))
+        cursor.execute(
+            "insert into WEBUSERS.JOINS set datasetIDa=%s, datasetIDb=%d, columna='tense', columnb='tense'" % (
+                options.dictid, toindexid))
+    elif len(fromindexlist) == 1:
+        fromindex = fromindexlist[0]
     else:
-        print("found too many possible index tables - use -i/--index to choose one or -n/--new to create a new one:", ", ".join(fromindexlist))
-        sys.exit(1)
+        if options.index:
+            if options.index not in fromindexlist:
+                print(str(options.index) + " isn't a valid index for your jmdict table. valid index tables:",
+                      ", ".join(fromindexlist))
+                sys.exit(1)
+            else:
+                fromindex = options.index
+        else:
+            print(
+                "found too many possible index tables - use -i/--index to choose one or -n/--new to create a new one:",
+                ", ".join(fromindexlist))
+            sys.exit(1)
+    print("using %s and %s" % (fromdict, fromindex))
+    socket.setdefaulttimeout(5)  # if pages don't respond within 5s then skip them
+    return options, fromdict, fromindex, cursor
 
-print("using %s and %s" % (fromdict, fromindex))
 
-socket.setdefaulttimeout(5) # if pages don't respond within 5s then skip them
+def main():
+    options, fromdict, fromindex, cursor = initialise()
+    # start here!
+    # seed the database with the links from a few key pages
+    if options.url:
+        scan(cursor, url=options.url, dicttable=fromdict, indextable=fromindex, pref=options.preferred)
+    elif options.new:
+        scan(cursor, url="http://ja.wikipedia.org", dicttable=fromdict, indextable=fromindex, pref=options.preferred)
+    # then crawl
+    if options.recursive:
+        while scan(cursor, dicttable=fromdict, indextable=fromindex, pref=options.preferred): pass
+    cursor.close()
 
-#start here!
-# seed the database with the links from a few key pages
-if options.url: scan(url = options.url, dicttable = fromdict, indextable = fromindex, pref = options.preferred)
-elif options.new: scan(url = "http://ja.wikipedia.org", dicttable = fromdict, indextable = fromindex, pref = options.preferred)
-# then crawl
-if options.recursive:
-    while scan(dicttable = fromdict, indextable = fromindex, pref = options.preferred): pass
-cursor.close()
+
+main()
 
